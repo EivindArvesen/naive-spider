@@ -24,58 +24,127 @@ __status__ = "Prototype"  # Prototype/Development/Production
 # The crawler should be able to resume operations if shut down.
 
 # FLOW:
-# Frontier -> Queue -> Scheduler -> ThreadPool -> DownloaderAndParser -> Frontier(URLs)
-#                                                                    |-> ContentStorage(TextAndMetadata)
+# Frontier/Queue -> Scheduler -> DownloaderAndParser(s) -> Frontier(URLs)
+#                                                      |-> ContentStorage(TextAndMetadata)
+
+from  __builtin__ import any as b_any
+from time import strftime
+import HTMLParser
+from urllib import urlopen
+import urlparse
 
 import multiprocessing
+import multiprocessing.queues
 import os
+import sqlite3
 import Queue
 
-class Scheduler(object):
-    # Get content from Frontier (SQLite), put on queue, spawn process
-    pass
+global database
+database = os.path.dirname(os.path.realpath(__file__)) + os.sep + 'crawler.db'
 
-class Frontier(object):
-    # Save, load, delete (URLs) from SQLite...
-    pass
 
-class ContentStorage(object):
-    # Save, load, delete (pages) from SQLite...
+class FrontierQueue(multiprocessing.queues.Queue):
+    # Save, load, delete (URLs) from SQLite upon queue action...
+    def __init__(self):
+        # Create DB if it doesn't exist
+        global database
+        self.database = database
+        if not os.path.isfile(self.database):
+            open(self.database, 'w+').close()
+
+        conn = sqlite3.connect(self.database)
+        c = conn.cursor()
+        # Create tables
+        if not c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='frontier'"):
+            c.execute('''CREATE TABLE frontier
+                     (URL text)''')
+        if not c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='storage'"):
+            c.execute('''CREATE TABLE storage
+                     (date text, content text, canonizedurl text)''')
+
+        # Save changes and close connection
+        conn.commit()
+        conn.close()
+
+        super(FrontierQueue, self).__init__()
+
+    def put(self, obj, block=True, timeout=None):
+        #print "PUT"
+        # Normalize URL (http/www)
+
+        conn = sqlite3.connect(self.database)
+        c = conn.cursor()
+        # Insert data
+        url = (obj,)
+        c.execute("INSERT INTO frontier VALUES (?)", (unicode(url),))
+        # Save changes and close connection
+        conn.commit()
+        conn.close()
+
+        return super(FrontierQueue, self).put(obj, block, timeout)
+
+    def get(self, block=True, timeout=None):
+        #print "GET"
+
+        conn = sqlite3.connect(self.database)
+        c = conn.cursor()
+        # Select data
+        url = super(FrontierQueue, self).get(block, timeout)
+        c.execute("DELETE FROM frontier WHERE url IS (?)", (unicode(url),))
+        # Save changes and close connection
+        conn.commit()
+        conn.close()
+
+        return url
+
 
 class CrawlerProcess(multiprocessing.Process):
     def __init__(self, queue):
         super(CrawlerProcess, self).__init__()
         self.queue = queue
+        global database
+        self.database = database
 
     def run(self):
-        print('hello')
+        #print'hello'
         while True:
             try:
-                a = self.queue.get(block=False)
-                print a
+                url = self.queue.get(block=False)
+                #print url
                 # download
-                # parse
+                response = urlopen(url)
+                if b_any('text/html' in x for x in response.info().headers):
+                    htmlBytes = response.read().decode('utf-8')
+
+                    conn = sqlite3.connect(self.database)
+                    c = conn.cursor()
+                    # Insert data in content storage
+                    c.execute("INSERT INTO storage VALUES (?, ?, ?)", (strftime("%Y-%m-%d %H:%M:%S"), htmlBytes, unicode(url)))
+                    # Save changes and close connection
+                    conn.commit()
+                    conn.close()
+
+                    # parse, replace relative URLs with canonized URL
+                    # add URLS to queue
             except Queue.Empty:
                 # Kill thread
                 break
 
 
-class Runner(object):
-    """Docstring for Runner class"""
+class Scheduler(object):
+    """Docstring for Scheduler class"""
 
     def __init__(self):
-        super(Runner, self).__init__()
+        super(Scheduler, self).__init__()
         #self.arg = arg
         # arg parsing etc.
 
-        db_path = os.path.realpath(__file__)
+        nthreads = multiprocessing.cpu_count() -1 # Detect number of logical (not physical; i.e. HyperThreading) cores
+        print "Detected", nthreads +1 , "(virtual/logical) cores."
 
-        nthreads = multiprocessing.cpu_count() # Detect number of logical (not physical; i.e. HyperThreading) cores
-        print "Detected", nthreads, "(virtual/logical) cores."
-
-        queue = multiprocessing.Queue()
+        queue = FrontierQueue()
         # put stuff in the queue here
-        for stuff in ['one', 'two', 'three', 'four', 'five', 'six', 'seven']:
+        for stuff in ['http://www.eivindarvesen.com']:
             queue.put(stuff)
         procs = [CrawlerProcess(queue) for i in xrange(nthreads)]
         for p in procs:
@@ -83,11 +152,7 @@ class Runner(object):
         for p in procs:
             p.join()
 
-    def __outputProcess__(self, queue):
-        """Listen for messages on queue. Perform all writing of output."""
-        print '\nLol...'
-
 
 if __name__ == "__main__":
     """Run only if the script is called explicitly."""
-    obj = Runner()
+    obj = Scheduler()
