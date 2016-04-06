@@ -42,9 +42,6 @@ import os
 import sqlite3
 import Queue
 
-global database
-database = os.path.dirname(os.path.realpath(__file__)) + os.sep + 'crawler.db'
-
 
 class LinksExtractor(HTMLParser):
     def handle_starttag(self, tag, attrs):
@@ -62,9 +59,8 @@ class LinksExtractor(HTMLParser):
 
 class FrontierQueue(multiprocessing.queues.Queue):
     # Save, load, delete (URLs) from SQLite upon queue action...
-    def __init__(self):
+    def __init__(self, database):
         # Create DB if it doesn't exist
-        global database
         self.database = database
         if not os.path.isfile(self.database):
             open(self.database, 'w+').close()
@@ -115,44 +111,31 @@ class FrontierQueue(multiprocessing.queues.Queue):
         return url
 
 
-class CrawlerProcess(multiprocessing.Process):
-    def __init__(self, queue):
-        super(CrawlerProcess, self).__init__()
-        self.queue = queue
-        global database
-        self.database = database
+def __workerProcess__(queue, database):
+    while True:
+        url = queue.get(block=False)
+        #print url
+        # download
+        response = urlopen(url)
+        if b_any('text/html' in x for x in response.info().headers):
+            htmlBytes = response.read().decode('utf-8')
 
-    def run(self):
-        #print'hello'
-        while True:
-            try:
-                url = self.queue.get(block=False)
-                #print url
-                # download
-                response = urlopen(url)
-                if b_any('text/html' in x for x in response.info().headers):
-                    htmlBytes = response.read().decode('utf-8')
+            conn = sqlite3.connect(database)
+            c = conn.cursor()
+            # Insert data in content storage
+            c.execute("INSERT INTO storage VALUES (?, ?, ?)", (strftime("%Y-%m-%d %H:%M:%S"), htmlBytes, unicode(url)))
+            # Save changes and close connection
+            conn.commit()
+            conn.close()
 
-                    conn = sqlite3.connect(self.database)
-                    c = conn.cursor()
-                    # Insert data in content storage
-                    c.execute("INSERT INTO storage VALUES (?, ?, ?)", (strftime("%Y-%m-%d %H:%M:%S"), htmlBytes, unicode(url)))
-                    # Save changes and close connection
-                    conn.commit()
-                    conn.close()
+            # parse, replace relative URLs with canonized URL
+            # add URLS to queue
+            htmlparser = LinksExtractor()
+            links = htmlparser.get_links(htmlBytes, url)
 
-                    # parse, replace relative URLs with canonized URL
-                    # add URLS to queue
-                    htmlparser = LinksExtractor()
-                    links = htmlparser.get_links(htmlBytes, url)
-
-                    for link in links:
-                        #print link
-                        self.queue.put(link)
-
-            except Queue.Empty:
-                # Kill thread
-                break
+            for link in links:
+                #print link
+                queue.put(link)
 
 
 class Scheduler(object):
@@ -163,18 +146,22 @@ class Scheduler(object):
         #self.arg = arg
         # arg parsing etc.
 
-        nthreads = multiprocessing.cpu_count() # Detect number of logical (not physical; i.e. HyperThreading) cores
-        print "Detected", nthreads , "(virtual/logical) cores."
+        database = os.path.dirname(os.path.realpath(__file__)) + os.sep + 'crawler.db'
 
-        queue = FrontierQueue()
+        if multiprocessing.cpu_count() < 1:  # Detect number of logical (not physical; i.e. HyperThreading) cores
+            nProcesses = multiprocessing.cpu_count() -1
+        else:
+            nProcesses = 1
+
+        queue = FrontierQueue(database)
+
         # put stuff in the queue here
-        for stuff in ['http://howdovaccinescauseautism.com']:
-            queue.put(stuff)
-        procs = [CrawlerProcess(queue) for i in xrange(nthreads)]
-        for p in procs:
-            p.start()
-        for p in procs:
-            p.join()
+        for address in ['http://howdovaccinescauseautism.com']:
+            queue.put(address)
+
+        p = multiprocessing.Pool(nProcesses, __workerProcess__, (queue, database, ))
+        p.close()
+        p.join()  # Wait for all child processes to close.
 
 
 if __name__ == "__main__":
