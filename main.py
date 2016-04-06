@@ -27,9 +27,12 @@ __status__ = "Prototype"  # Prototype/Development/Production
 # Frontier/Queue -> Scheduler -> DownloaderAndParser(s) -> Frontier(URLs)
 #                                                      |-> ContentStorage(TextAndMetadata)
 
+import htmllib, formatter
+import urllib, htmllib, formatter
+
 from  __builtin__ import any as b_any
 from time import strftime
-import HTMLParser
+from HTMLParser import HTMLParser
 from urllib import urlopen
 import urlparse
 
@@ -41,6 +44,20 @@ import Queue
 
 global database
 database = os.path.dirname(os.path.realpath(__file__)) + os.sep + 'crawler.db'
+
+
+class LinksExtractor(HTMLParser):
+    def handle_starttag(self, tag, attrs):
+        if tag == 'a':
+            for (key, value) in attrs:
+                if key == 'href':
+                    self.links.append(urlparse.urljoin(self.baseurl, value))
+
+    def get_links(self, page, baseurl):
+        self.links = []
+        self.baseurl = baseurl
+        self.feed(page)
+        return self.links
 
 
 class FrontierQueue(multiprocessing.queues.Queue):
@@ -126,6 +143,13 @@ class CrawlerProcess(multiprocessing.Process):
 
                     # parse, replace relative URLs with canonized URL
                     # add URLS to queue
+                    htmlparser = LinksExtractor()
+                    links = htmlparser.get_links(htmlBytes, url)
+
+                    for link in links:
+                        #print link
+                        self.queue.put(link)
+
             except Queue.Empty:
                 # Kill thread
                 break
@@ -139,12 +163,12 @@ class Scheduler(object):
         #self.arg = arg
         # arg parsing etc.
 
-        nthreads = multiprocessing.cpu_count() -1 # Detect number of logical (not physical; i.e. HyperThreading) cores
-        print "Detected", nthreads +1 , "(virtual/logical) cores."
+        nthreads = multiprocessing.cpu_count() # Detect number of logical (not physical; i.e. HyperThreading) cores
+        print "Detected", nthreads , "(virtual/logical) cores."
 
         queue = FrontierQueue()
         # put stuff in the queue here
-        for stuff in ['http://www.eivindarvesen.com']:
+        for stuff in ['http://howdovaccinescauseautism.com']:
             queue.put(stuff)
         procs = [CrawlerProcess(queue) for i in xrange(nthreads)]
         for p in procs:
