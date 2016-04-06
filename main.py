@@ -31,7 +31,7 @@ import htmllib, formatter
 import urllib, htmllib, formatter
 
 from  __builtin__ import any as b_any
-from time import strftime
+from time import strftime, sleep
 from HTMLParser import HTMLParser
 from urllib import urlopen
 import urlparse
@@ -65,19 +65,18 @@ class FrontierQueue(multiprocessing.queues.Queue):
         if not os.path.isfile(self.database):
             open(self.database, 'w+').close()
 
-        conn = sqlite3.connect(self.database)
-        c = conn.cursor()
-        # Create tables
-        if not c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='frontier'"):
-            c.execute('''CREATE TABLE frontier
-                     (URL text)''')
-        if not c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='storage'"):
-            c.execute('''CREATE TABLE storage
-                     (date text, content text, canonizedurl text)''')
+            conn = sqlite3.connect(self.database)
+            c = conn.cursor()
 
-        # Save changes and close connection
-        conn.commit()
-        conn.close()
+            # Create tables
+            c.execute('''CREATE TABLE frontier
+                    (URL text)''')
+            c.execute('''CREATE TABLE storage
+                    (date text, content text, canonizedurl text)''')
+
+            # Save changes and close connection
+            conn.commit()
+            conn.close()
 
         super(FrontierQueue, self).__init__()
 
@@ -113,29 +112,40 @@ class FrontierQueue(multiprocessing.queues.Queue):
 
 def __workerProcess__(queue, database):
     while True:
-        url = queue.get(block=False)
-        #print url
-        # download
-        response = urlopen(url)
-        if b_any('text/html' in x for x in response.info().headers):
-            htmlBytes = response.read().decode('utf-8')
+        try:
+            url = queue.get(block=False)
+            #print url
+            # download
+            response = urlopen(url)
+            if b_any('text/html' in x for x in response.info().headers):
+                htmlBytes = response.read().decode('utf-8')
 
-            conn = sqlite3.connect(database)
-            c = conn.cursor()
-            # Insert data in content storage
-            c.execute("INSERT INTO storage VALUES (?, ?, ?)", (strftime("%Y-%m-%d %H:%M:%S"), htmlBytes, unicode(url)))
-            # Save changes and close connection
-            conn.commit()
-            conn.close()
+                conn = sqlite3.connect(database)
+                c = conn.cursor()
+                # Insert data in content storage
+                c.execute("INSERT INTO storage VALUES (?, ?, ?)", (strftime("%Y-%m-%d %H:%M:%S"), htmlBytes, unicode(url)))
+                # Save changes and close connection
+                conn.commit()
+                conn.close()
 
-            # parse, replace relative URLs with canonized URL
-            # add URLS to queue
-            htmlparser = LinksExtractor()
-            links = htmlparser.get_links(htmlBytes, url)
+                # parse, replace relative URLs with canonized URL
+                # add URLS to queue
+                htmlparser = LinksExtractor()
+                links = htmlparser.get_links(htmlBytes, url)
 
-            for link in links:
-                #print link
-                queue.put(link)
+                for link in links:
+                    conn = sqlite3.connect(database)
+                    c = conn.cursor()
+                    # Select data
+                    c.execute("SELECT count(*) FROM frontier WHERE url = (?)", (unicode(link),))
+                    result = c.fetchone()[0]
+                    # Save changes and close connection
+                    conn.commit()
+                    conn.close()
+                    if not result:
+                        queue.put(link)
+        except Exception, e:
+            sleep(1)
 
 
 class Scheduler(object):
@@ -162,6 +172,8 @@ class Scheduler(object):
         p = multiprocessing.Pool(nProcesses, __workerProcess__, (queue, database, ))
         p.close()
         p.join()  # Wait for all child processes to close.
+
+        # kill/cleanup on ctrl+c?
 
 
 if __name__ == "__main__":
