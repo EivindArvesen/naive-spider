@@ -3,7 +3,7 @@ Naive, uses only the Python standard library.
 
 Run the script with the command
 ```bash
-python main.py
+python main.py <URL(s) to start with>
 ```
 
 Can only deal with well formed documents, valid markup (with UTF-8 encoding).
@@ -17,6 +17,7 @@ Tasks should have separate processess, i.e.:
 
 Could probably do with support for rules (blacklist, etc.) and better model
 abstraction (i.e. objects/classes for interactions with frontier and storage).
+Reorganize some code, e.g. deal with args etc. elsewhere.
 
 Serialization/saving should be optimized.
 
